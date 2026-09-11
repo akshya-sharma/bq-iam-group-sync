@@ -1,39 +1,36 @@
-# BigQuery Lakehouse Managed Iceberg Tables: Dynamic CLS & RLS via Views & Group Sync
+# BigQuery Custom CLS & RLS via Views & Cloud Identity Group Sync
 
-A lightweight, small-scale pattern for applying dynamic Column-Level Security (CLS) and Row-Level Security (RLS) masking/filtering on **Lakehouse runtime-managed Apache Iceberg tables** in Google Cloud BigQuery using **Standard SQL Views** and an automated **Cloud Identity / Entra ID group membership sync pipeline**.
+A lightweight, small-scale pattern for implementing custom **Column-Level Security (CLS)** and **Row-Level Security (RLS)** masking/filtering in Google Cloud BigQuery using **Standard SQL Views** and an automated **Google Cloud Identity group membership sync pipeline**.
 
 ---
 
 ## Context & Architectural Scope
 
-**Lakehouse runtime-managed Apache Iceberg tables** in BigQuery have specific platform characteristics and limitations:
-1. **No BigLake Cloud Resource Connection Required**: Lakehouse Managed Iceberg tables are managed directly by the Lakehouse runtime without requiring a BigLake Cloud Resource Connection.
-2. **Authorized Views & Native RLS Are Not Supported**: Lakehouse runtime-managed Iceberg tables **do not support BigQuery Authorized Views** or native **Row-Level Security (RLS)** policies.
+This pattern is designed for situations where **BigQuery native Row-Level Security (RLS)**, **native Column-Level Security (CLS / Policy Tags)**, or **Authorized Views** are not feasible for your table format or governance requirements, and you need a **custom SQL-based approach** for handling group-driven RLS and CLS.
 
 ### Scope of This Solution
-Because Authorized Views and native RLS policies are not supported on Lakehouse runtime-managed Iceberg tables, **this repository does not provide a full-fledged, zero-trust RLS/CLS enforcement boundary**. In BigQuery, querying a standard view requires the user to also hold `roles/bigquery.dataViewer` on the underlying tables—meaning a user with direct ad-hoc SQL access could query the base table if they know its identifier.
+Because native RLS/CLS or Authorized Views are not used, **this repository does not provide a full-fledged, zero-trust RLS/CLS enforcement boundary**. In BigQuery, querying a standard view requires the user to also hold `roles/bigquery.dataViewer` on the underlying tables—meaning a user with direct ad-hoc SQL access could query the base table directly if they know its identifier.
 
 Instead, this solution demonstrates a **practical, small-scale implementation pattern** for dynamic group-based masking and row filtering where:
 - Users consume data through curated **Standard Views** (e.g., via BI tools like Looker, semantic layers, or controlled reporting datasets).
-- Transitive group memberships from **Google Cloud Identity / Microsoft Entra ID** are synced into a BigQuery lookup table (`group_memberships`) and evaluated dynamically at query time using `SESSION_USER()`.
+- Transitive group memberships from **Google Cloud Identity** are synced into a BigQuery lookup table (`group_memberships`) and evaluated dynamically at query time using `SESSION_USER()`.
 
 ```mermaid
 flowchart TD
-    Entra["Microsoft Entra ID"] -->|"SCIM Sync"| CI["Google Cloud Identity"]
     CS["Cloud Scheduler<br/>Every 30 mins"] -->|"Triggers"| CR["Cloud Run Job<br/>sync-job/main.py"]
-    CR -->|"1. searchTransitiveMemberships"| CI
+    CR -->|"1. searchTransitiveMemberships"| CI["Google Cloud Identity"]
     CR -->|"2. Atomic Load WRITE_TRUNCATE"| Lookup[("BigQuery Table<br/>private_dataset.group_memberships")]
 
-    User(["End User / BI Dashboard<br/>alice@company.com"]) -->|"3. Queries Standard View"| View["BigQuery Standard View<br/>shared_dataset.iceberg_employees_secure_view"]
+    User(["End User / BI Dashboard<br/>alice@company.com"]) -->|"3. Queries Standard View"| View["BigQuery Standard View<br/>shared_dataset.employees_secure_view"]
 
     View -->|"4. Checks SESSION_USER()"| Lookup
-    View -->|"5. Reads Managed Iceberg Table"| Iceberg[("Lakehouse Managed Iceberg Table<br/>private_dataset.iceberg_employees")]
+    View -->|"5. Reads Base Table"| Base[("BigQuery Base Table<br/>private_dataset.employees")]
 ```
 
 ### Key Architectural Highlights
-1. **Lakehouse Managed Iceberg Tables (Connectionless)**: Operates directly on Lakehouse runtime-managed Iceberg tables without requiring a BigLake Cloud Resource Connection.
-2. **Atomic Group Membership Sync**: A serverless Cloud Run Job runs on a schedule to flatten nested group memberships from Google Cloud Identity (or Entra ID) and overwrites `private_dataset.group_memberships` using `WRITE_TRUNCATE` (atomic transaction with zero query downtime).
-3. **Zero-Fanout SQL Masking**: The standard view uses a 1-row CTE (`WITH user_permissions AS (...)`) combined with `CROSS JOIN` so that users belonging to multiple groups never cause duplicate rows or scan penalties on the Iceberg table.
+1. **Custom SQL-Based Masking & Filtering**: Dynamically applies conditional masking (`IF(...)`, `CONCAT(...)`) or row filtering (`WHERE ...`) based on the querying user's Google Cloud Identity group memberships (`SESSION_USER()`).
+2. **Atomic Group Membership Sync**: A serverless Cloud Run Job runs on a schedule to flatten nested group memberships from Google Cloud Identity and overwrites `private_dataset.group_memberships` using `WRITE_TRUNCATE` (atomic transaction with zero query downtime).
+3. **Zero-Fanout SQL Masking**: The standard view uses a 1-row CTE (`WITH user_permissions AS (...)`) combined with `CROSS JOIN` so that users belonging to multiple groups never cause duplicate rows or scan penalties on the base table.
 
 ---
 
@@ -49,7 +46,7 @@ bq-iam-group-sync/
 │   └── Dockerfile                     # Container definition for Cloud Run Job
 └── sql/
     ├── 01_group_memberships_ddl.sql   # DDL for the group_memberships lookup table
-    └── 02_iceberg_secure_view.sql     # Standard View with dynamic CLS/RLS via SESSION_USER()
+    └── 02_secure_view.sql             # Standard View with custom CLS/RLS via SESSION_USER()
 ```
 
 ---
@@ -80,19 +77,19 @@ gcloud services enable \
 ---
 
 ### Step 2: Create BigQuery Datasets
-Create the datasets for the base Iceberg table, group lookup table, and reporting views:
+Create the datasets for the base tables, group lookup table, and reporting views:
 
 ```bash
-# 1. Create private_dataset (holds base Iceberg table + group_memberships lookup table)
+# 1. Create private_dataset (holds base tables + group_memberships lookup table)
 bq --location="${BQ_LOCATION}" mk \
   --dataset \
-  --description="Dataset containing Lakehouse Managed Iceberg tables and security lookup tables" \
+  --description="Dataset containing base tables and security lookup tables" \
   "${PROJECT_ID}:${PRIVATE_DATASET}"
 
 # 2. Create shared_dataset (holds standard reporting views)
 bq --location="${BQ_LOCATION}" mk \
   --dataset \
-  --description="Dataset containing standard views with dynamic CLS/RLS masking" \
+  --description="Dataset containing standard views with custom CLS/RLS masking" \
   "${PROJECT_ID}:${SHARED_DATASET}"
 ```
 
@@ -158,12 +155,11 @@ gcloud scheduler jobs create http trigger-cloud-identity-bq-sync \
 ---
 
 ### Step 5: Create the Lookup Table & Standard View
-Update the project/dataset references in `sql/01_group_memberships_ddl.sql` and `sql/02_iceberg_secure_view.sql` (or replace `my-project` with `${PROJECT_ID}`), then execute the SQL scripts:
+Execute the SQL DDL scripts directly using `bq query` (the project is automatically resolved from `--project_id`):
 
 1. **Create the Group Membership Table** (`sql/01_group_memberships_ddl.sql`):
    ```bash
-   sed "s/my-project/${PROJECT_ID}/g" sql/01_group_memberships_ddl.sql | \
-     bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false
+   bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false < sql/01_group_memberships_ddl.sql
    ```
 2. **Trigger an Initial Sync** to populate `private_dataset.group_memberships`:
    ```bash
@@ -172,26 +168,25 @@ Update the project/dataset references in `sql/01_group_memberships_ddl.sql` and 
      --project "${PROJECT_ID}" \
      --wait
    ```
-3. **Create the Standard View** (`sql/02_iceberg_secure_view.sql`):
+3. **Create the Standard View** (`sql/02_secure_view.sql`):
    ```bash
-   sed "s/my-project/${PROJECT_ID}/g" sql/02_iceberg_secure_view.sql | \
-     bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false
+   bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false < sql/02_secure_view.sql
    ```
 
 ---
 
 ### Step 6: Grant Dataset-Scoped User / BI Reader Access
-Because Authorized Views are not supported on Lakehouse runtime-managed Iceberg tables, users (or BI service accounts) querying the standard view require `roles/bigquery.dataViewer` on both `shared_dataset` and `private_dataset`. Grant these dataset-scoped permissions using BigQuery SQL `GRANT`:
+Grant dataset-scoped `roles/bigquery.dataViewer` permissions on both `shared_dataset` and `private_dataset` using BigQuery SQL `GRANT`:
 
 ```bash
 # 1. Grant Data Viewer on shared_dataset (for the view)
 bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false \
   "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJECT_ID}.${SHARED_DATASET}\` TO 'group:analysts@company.com';"
 
-# 2. Grant Data Viewer on private_dataset (required for standard view execution over Iceberg tables)
+# 2. Grant Data Viewer on private_dataset (required for standard view execution over base tables)
 bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false \
   "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJECT_ID}.${PRIVATE_DATASET}\` TO 'group:analysts@company.com';"
 ```
 
 > [!IMPORTANT]
-> **Security Note for Small-Scale Deployments**: Because users hold `roles/bigquery.dataViewer` to satisfy BigQuery standard view execution requirements over Lakehouse Managed Iceberg tables, this pattern is best suited for **small-scale requirements, BI dashboards, or controlled query surfaces** where users interact with the curated view rather than executing arbitrary SQL against underlying tables.
+> **Security Note for Small-Scale Deployments**: Because users hold `roles/bigquery.dataViewer` on `private_dataset` to satisfy BigQuery standard view execution requirements, this pattern is best suited for **small-scale requirements, BI dashboards, or controlled query surfaces** where users interact with the curated view rather than executing arbitrary SQL against underlying tables.
