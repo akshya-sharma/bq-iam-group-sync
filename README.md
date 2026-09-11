@@ -109,17 +109,14 @@ gcloud iam service-accounts create bq-group-sync-sa \
 
 export SYNC_SA_EMAIL="bq-group-sync-sa@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# 2. Grant BigQuery Job User at Project Level
+# 2. Grant BigQuery Job User at Project Level (required to run load jobs)
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:${SYNC_SA_EMAIL}" \
   --role="roles/bigquery.jobUser"
 
-# 3. Grant BigQuery Data Editor on private_dataset
-bq add-iam-policy-binding \
-  --dataset \
-  --member="serviceAccount:${SYNC_SA_EMAIL}" \
-  --role="roles/bigquery.dataEditor" \
-  "${PROJECT_ID}:${PRIVATE_DATASET}"
+# 3. Grant BigQuery Data Editor scoped strictly to private_dataset via SQL DCL
+bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false \
+  "GRANT \`roles/bigquery.dataEditor\` ON SCHEMA \`${PROJECT_ID}.${PRIVATE_DATASET}\` TO 'serviceAccount:${SYNC_SA_EMAIL}';"
 ```
 
 **Grant Cloud Identity Groups Reader Role in Google Admin Console:**
@@ -183,24 +180,18 @@ Update the project/dataset references in `sql/01_group_memberships_ddl.sql` and 
 
 ---
 
-### Step 6: Grant User / BI Reader Access
-Because Authorized Views are not supported on Lakehouse runtime-managed Iceberg tables, users (or BI service accounts) querying the standard view require `roles/bigquery.dataViewer` on both `shared_dataset` and `private_dataset`:
+### Step 6: Grant Dataset-Scoped User / BI Reader Access
+Because Authorized Views are not supported on Lakehouse runtime-managed Iceberg tables, users (or BI service accounts) querying the standard view require `roles/bigquery.dataViewer` on both `shared_dataset` and `private_dataset`. Grant these dataset-scoped permissions using BigQuery SQL `GRANT`:
 
 ```bash
-# Grant Data Viewer on shared_dataset (for the view)
-bq add-iam-policy-binding \
-  --dataset \
-  --member="group:analysts@company.com" \
-  --role="roles/bigquery.dataViewer" \
-  "${PROJECT_ID}:${SHARED_DATASET}"
+# 1. Grant Data Viewer on shared_dataset (for the view)
+bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false \
+  "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJECT_ID}.${SHARED_DATASET}\` TO 'group:analysts@company.com';"
 
-# Grant Data Viewer on private_dataset (required for standard view execution over Iceberg tables)
-bq add-iam-policy-binding \
-  --dataset \
-  --member="group:analysts@company.com" \
-  --role="roles/bigquery.dataViewer" \
-  "${PROJECT_ID}:${PRIVATE_DATASET}"
+# 2. Grant Data Viewer on private_dataset (required for standard view execution over Iceberg tables)
+bq query --project_id="${PROJECT_ID}" --use_legacy_sql=false \
+  "GRANT \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJECT_ID}.${PRIVATE_DATASET}\` TO 'group:analysts@company.com';"
 ```
 
 > [!IMPORTANT]
-> **Security Note for Small-Scale Deployments**: Because users hold `roles/bigquery.dataViewer` on `private_dataset` to satisfy BigQuery standard view execution requirements, this pattern is best suited for **small-scale requirements, BI dashboards, or controlled query surfaces** where users interact with the curated view rather than executing arbitrary SQL against underlying tables.
+> **Security Note for Small-Scale Deployments**: Because users hold `roles/bigquery.dataViewer` to satisfy BigQuery standard view execution requirements over Lakehouse Managed Iceberg tables, this pattern is best suited for **small-scale requirements, BI dashboards, or controlled query surfaces** where users interact with the curated view rather than executing arbitrary SQL against underlying tables.
