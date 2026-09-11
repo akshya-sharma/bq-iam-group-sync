@@ -18,7 +18,7 @@ Instead, this solution demonstrates a **practical, small-scale implementation pa
 - Transitive group memberships from **Google Cloud Identity / Microsoft Entra ID** are synced into a BigQuery lookup table (`group_memberships`) and evaluated dynamically at query time using `SESSION_USER()`.
 
 ```mermaid
-flowchart TD
+graph TD
     Entra[Microsoft Entra ID] -->|SCIM Sync| CI[Google Cloud Identity]
     CS[Cloud Scheduler\nEvery 30 mins] -->|Triggers| CR[Cloud Run Job\nsync-job/main.py]
     CR -->|1. searchTransitiveMemberships| CI
