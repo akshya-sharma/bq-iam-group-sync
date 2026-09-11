@@ -116,6 +116,7 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
 
 # 3. Grant BigQuery Data Editor on private_dataset
 bq add-iam-policy-binding \
+  --dataset \
   --member="serviceAccount:${SYNC_SA_EMAIL}" \
   --role="roles/bigquery.dataEditor" \
   "${PROJECT_ID}:${PRIVATE_DATASET}"
@@ -188,12 +189,14 @@ Because Authorized Views are not supported on Lakehouse runtime-managed Iceberg 
 ```bash
 # Grant Data Viewer on shared_dataset (for the view)
 bq add-iam-policy-binding \
+  --dataset \
   --member="group:analysts@company.com" \
   --role="roles/bigquery.dataViewer" \
   "${PROJECT_ID}:${SHARED_DATASET}"
 
 # Grant Data Viewer on private_dataset (required for standard view execution over Iceberg tables)
 bq add-iam-policy-binding \
+  --dataset \
   --member="group:analysts@company.com" \
   --role="roles/bigquery.dataViewer" \
   "${PROJECT_ID}:${PRIVATE_DATASET}"

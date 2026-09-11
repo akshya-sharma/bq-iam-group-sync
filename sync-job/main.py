@@ -17,7 +17,7 @@ def get_cloud_identity_service():
     credentials, _ = google.auth.default(
         scopes=["https://www.googleapis.com/auth/cloud-identity.groups.readonly"]
     )
-    return build("cloudidentity", "v1", credentials=credentials)
+    return build("cloudidentity", "v1", credentials=credentials, cache_discovery=False)
 
 
 def get_group_resource_name(service, group_email: str) -> str:
@@ -57,7 +57,7 @@ def get_transitive_user_emails(service, group_resource_name: str) -> list[str]:
 
 
 def sync_to_bigquery():
-    logging.info("Starting Cloud Identity group membership sync...")
+    logging.info("Starting Cloud Identity group membership sync to target table: %s", BQ_TABLE_ID)
     service = get_cloud_identity_service()
     rows = []
 
@@ -81,9 +81,18 @@ def sync_to_bigquery():
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
 
-    job = bq_client.load_table_from_json(rows, BQ_TABLE_ID, job_config=job_config)
-    job.result()
-    logging.info("Successfully synced %d group memberships to %s.", len(rows), BQ_TABLE_ID)
+    try:
+        job = bq_client.load_table_from_json(rows, BQ_TABLE_ID, job_config=job_config)
+        job.result()
+        logging.info("Successfully synced %d group memberships to %s.", len(rows), BQ_TABLE_ID)
+    except Exception as exc:
+        if hasattr(exc, "response") and exc.response is not None:
+            logging.error(
+                "BigQuery API error (HTTP %s): %s",
+                getattr(exc.response, "status_code", "unknown"),
+                getattr(exc.response, "text", ""),
+            )
+        raise
 
 
 if __name__ == "__main__":
