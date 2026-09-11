@@ -18,16 +18,16 @@ Instead, this solution demonstrates a **practical, small-scale implementation pa
 - Transitive group memberships from **Google Cloud Identity / Microsoft Entra ID** are synced into a BigQuery lookup table (`group_memberships`) and evaluated dynamically at query time using `SESSION_USER()`.
 
 ```mermaid
-graph TD
-    Entra[Microsoft Entra ID] -->|SCIM Sync| CI[Google Cloud Identity]
-    CS[Cloud Scheduler\nEvery 30 mins] -->|Triggers| CR[Cloud Run Job\nsync-job/main.py]
-    CR -->|1. searchTransitiveMemberships| CI
-    CR -->|2. Atomic Load WRITE_TRUNCATE| Lookup[(BigQuery Table\nprivate_dataset.group_memberships)]
+flowchart TD
+    Entra["Microsoft Entra ID"] -->|"SCIM Sync"| CI["Google Cloud Identity"]
+    CS["Cloud Scheduler<br/>Every 30 mins"] -->|"Triggers"| CR["Cloud Run Job<br/>sync-job/main.py"]
+    CR -->|"1. searchTransitiveMemberships"| CI
+    CR -->|"2. Atomic Load WRITE_TRUNCATE"| Lookup[("BigQuery Table<br/>private_dataset.group_memberships")]
 
-    User([End User / BI Dashboard\nalice@company.com]) -->|3. Queries Standard View| View[BigQuery Standard View\nshared_dataset.iceberg_employees_secure_view]
+    User(["End User / BI Dashboard<br/>alice@company.com"]) -->|"3. Queries Standard View"| View["BigQuery Standard View<br/>shared_dataset.iceberg_employees_secure_view"]
 
-    View -->|4. Checks SESSION_USER()| Lookup
-    View -->|5. Reads Managed Iceberg Table| Iceberg[(Lakehouse Managed Iceberg Table\nprivate_dataset.iceberg_employees)]
+    View -->|"4. Checks SESSION_USER()"| Lookup
+    View -->|"5. Reads Managed Iceberg Table"| Iceberg[("Lakehouse Managed Iceberg Table<br/>private_dataset.iceberg_employees")]
 ```
 
 ### Key Architectural Highlights
